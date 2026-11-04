@@ -387,23 +387,41 @@ with tabs[1]:
 with tabs[2]:
     st.subheader("Créer une commande")
     pieces_df = read_pieces()
+    
+    # On utilise une clé unique pour le formulaire pour pouvoir le réinitialiser
+    if "form_key" not in st.session_state:
+        st.session_state.form_key = 0
+
     col1, col2 = st.columns(2)
-    order_code = col1.text_input("Référence de commande *", value=f"CMD-{datetime.now().strftime('%Y%m%d-%H%M')}", key="new_order_code")
-    client = col2.text_input("Client", key="new_order_client")
-    notes = st.text_area("Notes pour l'atelier", key="new_order_notes")
+    # On ajoute la clé du formulaire à la valeur par défaut pour forcer la réinitialisation
+    default_code = f"CMD-{datetime.now().strftime('%Y%m%d-%H%M')}"
+    order_code = col1.text_input("Référence de commande *", value=default_code, key=f"new_order_code_{st.session_state.form_key}")
+    client = col2.text_input("Client", key=f"new_order_client_{st.session_state.form_key}")
+    notes = st.text_area("Notes pour l'atelier", key=f"new_order_notes_{st.session_state.form_key}")
+    
     st.markdown("**Pièces nécessaires**")
+    selected_refs = []
+    qty_by_ref = {}
+    
     if pieces_df.empty:
         st.info("Ajoute ou importe d'abord des pièces dans l'inventaire.")
-        selected_refs = []
-        qty_by_ref = {}
     else:
-        selected_refs = st.multiselect("Sélectionner les pièces de cette commande", pieces_df["ref"].tolist(),
-                                       format_func=lambda r: f"{r} — {pieces_df.loc[pieces_df['ref']==r,'nom'].iloc[0]}", key="new_order_refs")
-        qty_by_ref = {}
+        selected_refs = st.multiselect(
+            "Sélectionner les pièces de cette commande", 
+            pieces_df["ref"].tolist(),
+            format_func=lambda r: f"{r} — {pieces_df.loc[pieces_df['ref']==r,'nom'].iloc[0]}", 
+            key=f"new_order_refs_{st.session_state.form_key}"
+        )
+        
         if selected_refs:
             cols = st.columns(min(3, len(selected_refs)))
             for i, r in enumerate(selected_refs):
-                qty_by_ref[r] = cols[i % len(cols)].number_input(f"Quantité — {r}", min_value=1, value=1, step=1, key=f"new_qty_{r}")
+                # On ajoute form_key à la clé du number_input aussi
+                qty_by_ref[r] = cols[i % len(cols)].number_input(
+                    f"Quantité — {r}", min_value=1, value=1, step=1, 
+                    key=f"new_qty_{r}_{st.session_state.form_key}"
+                )
+
     if st.button("Créer la commande (brouillon)", type="primary", key="create_order_button"):
         if not order_code.strip():
             st.error("La référence de commande est obligatoire.")
@@ -412,22 +430,31 @@ with tabs[2]:
         else:
             with db() as conn:
                 try:
-                    cur = conn.execute("INSERT INTO orders(order_code,client,created_at,status,notes) VALUES(?,?,?,?,?)",
-                                       (order_code.strip(), client.strip(), datetime.now().strftime("%d/%m/%Y %H:%M"), "Brouillon", notes.strip()))
-                    oid = cur.lastrowid
-                    for r in selected_refs:
-                        row = pieces_df.loc[pieces_df["ref"] == r].iloc[0]
-                        conn.execute("INSERT INTO order_lines(order_id,ref,nom_snapshot,quantite) VALUES(?,?,?,?)",
-                                     (oid, r, row["nom"], int(qty_by_ref[r])))
-                    st.session_state["last_order_id"] = oid
-                    st.success("Brouillon créé. Le stock n'est pas encore déduit.")
-                    st.rerun()
+                    # Vérification supplémentaire pour éviter le doublon avant l'insertion
+                    existing = conn.execute("SELECT id FROM orders WHERE order_code=?", (order_code.strip(),)).fetchone()
+                    if existing:
+                        st.error("Cette référence de commande existe déjà.")
+                    else:
+                        cur = conn.execute("INSERT INTO orders(order_code,client,created_at,status,notes) VALUES(?,?,?,?,?)",
+                                           (order_code.strip(), client.strip(), datetime.now().strftime("%d/%m/%Y %H:%M"), "Brouillon", notes.strip()))
+                        oid = cur.lastrowid
+                        for r in selected_refs:
+                            row = pieces_df.loc[pieces_df["ref"] == r].iloc[0]
+                            conn.execute("INSERT INTO order_lines(order_id,ref,nom_snapshot,quantite) VALUES(?,?,?,?)",
+                                         (oid, r, row["nom"], int(qty_by_ref[r])))
+                        
+                        # --- C'EST ICI LA CORRECTION ---
+                        st.session_state["last_order_id"] = oid
+                        st.session_state.form_key += 1 # Incrémente la clé pour vider le formulaire
+                        st.success("Brouillon créé. Le stock n'est pas encore déduit.")
+                        st.rerun()
                 except sqlite3.IntegrityError:
-                    st.error("Cette référence de commande existe déjà.")
+                    st.error("Cette référence de commande existe déjà (erreur de base de données).")
 
     st.divider()
     st.subheader("Commandes enregistrées")
     orders_df = read_orders()
+    
     if orders_df.empty:
         st.info("Aucune commande enregistrée.")
     else:
@@ -435,27 +462,34 @@ with tabs[2]:
             "id":"ID","order_code":"Commande","client":"Client","created_at":"Date","status":"Statut"
         })
         st.dataframe(display_orders, use_container_width=True, hide_index=True)
+        
         ids = orders_df["id"].tolist()
         default_id = st.session_state.get("last_order_id", ids[0])
         if default_id not in ids:
             default_id = ids[0]
+            
         selected_id = st.selectbox("Commande à consulter", ids, index=ids.index(default_id), format_func=lambda i: orders_df.loc[orders_df["id"]==i,"order_code"].iloc[0])
         order, lines = get_order(int(selected_id))
+        
         if order:
             st.write(f"**{order['order_code']}** — {order['client'] or 'Client non renseigné'} — {order['status']}")
             line_df = pd.DataFrame(lines)
             st.dataframe(line_df.rename(columns={"ref":"Référence","nom":"Désignation","quantite":"Quantité"}), use_container_width=True, hide_index=True)
+            
             pdf = make_pdf(order, lines, atelier, threshold)
             st.download_button("📄 Télécharger la fiche atelier PDF", data=pdf, file_name=f"{order['order_code']}_fiche_atelier.pdf", mime="application/pdf")
+            
             if order["status"] == "Brouillon":
                 if st.button("Valider la commande et déduire le stock", type="primary", key=f"validate_{selected_id}"):
                     latest_order, latest_lines = get_order(int(selected_id))
                     latest_pieces = read_pieces().set_index("ref")
                     shortages = []
+                    
                     for line in latest_lines:
                         if line["ref"] not in latest_pieces.index or int(latest_pieces.loc[line["ref"], "stock"]) < int(line["quantite"]):
                             available = 0 if line["ref"] not in latest_pieces.index else int(latest_pieces.loc[line["ref"], "stock"])
                             shortages.append(f"{line['ref']} : besoin {line['quantite']}, disponible {available}")
+                            
                     if shortages:
                         st.error("Stock insuffisant : " + " ; ".join(shortages) + ". La commande n'a pas été validée.")
                     else:
