@@ -16,18 +16,19 @@ from reportlab.lib.pagesizes import A4, landscape
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib.units import mm
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+from sqlalchemy import text
 
 st.set_page_config(page_title="Stock meubles van", page_icon="🪚", layout="wide")
 
 # ----------------------------- Connexion Supabase -----------------------------
-# La connexion utilise le fichier .streamlit/secrets.toml
+# La connexion utilise le fichier .streamlit/secrets.toml ou les secrets Streamlit Cloud
 conn = st.connection("supabase", type="sql")
 
 
 def init_db():
     """Crée les tables si elles n'existent pas."""
     with conn.session as s:
-        s.execute("""
+        s.execute(text("""
             CREATE TABLE IF NOT EXISTS pieces (
                 ref TEXT PRIMARY KEY,
                 nom TEXT NOT NULL,
@@ -39,8 +40,8 @@ def init_db():
                 notes TEXT DEFAULT '',
                 updated_at TEXT NOT NULL
             )
-        """)
-        s.execute("""
+        """))
+        s.execute(text("""
             CREATE TABLE IF NOT EXISTS orders (
                 id SERIAL PRIMARY KEY,
                 order_code TEXT UNIQUE NOT NULL,
@@ -49,8 +50,8 @@ def init_db():
                 status TEXT NOT NULL DEFAULT 'Brouillon',
                 notes TEXT DEFAULT ''
             )
-        """)
-        s.execute("""
+        """))
+        s.execute(text("""
             CREATE TABLE IF NOT EXISTS order_lines (
                 id SERIAL PRIMARY KEY,
                 order_id INTEGER NOT NULL,
@@ -58,22 +59,25 @@ def init_db():
                 nom_snapshot TEXT NOT NULL,
                 quantite INTEGER NOT NULL
             )
-        """)
-        s.execute("""
+        """))
+        s.execute(text("""
             CREATE TABLE IF NOT EXISTS settings (
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
             )
-        """)
-        s.execute("INSERT INTO settings(key,value) VALUES('seuil_commun','5') ON CONFLICT (key) DO NOTHING")
-        s.execute("INSERT INTO settings(key,value) VALUES('nom_atelier','Atelier meubles van') ON CONFLICT (key) DO NOTHING")
+        """))
+        s.execute(text("INSERT INTO settings(key,value) VALUES('seuil_commun','5') ON CONFLICT (key) DO NOTHING"))
+        s.execute(text("INSERT INTO settings(key,value) VALUES('nom_atelier','Atelier meubles van') ON CONFLICT (key) DO NOTHING"))
         s.commit()
 
 
 # Initialiser la base une seule fois par session
 if "db_initialized" not in st.session_state:
-    init_db()
-    st.session_state.db_initialized = True
+    try:
+        init_db()
+        st.session_state.db_initialized = True
+    except Exception as e:
+        st.error(f"Erreur d'initialisation de la base de données : {e}")
 
 
 def get_setting(key, default=""):
@@ -84,7 +88,7 @@ def get_setting(key, default=""):
 def set_setting(key, value):
     with conn.session as s:
         s.execute(
-            "INSERT INTO settings(key, value) VALUES(:key, :value) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
+            text("INSERT INTO settings(key, value) VALUES(:key, :value) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value"),
             params={"key": key, "value": str(value)}
         )
         s.commit()
@@ -122,11 +126,11 @@ def upsert_piece(row, allow_stock_update=True):
         existing = conn.query("SELECT ref FROM pieces WHERE ref = :ref", params={"ref": str(row["ref"])}, ttl=0)
         if not existing.empty:
             if allow_stock_update:
-                s.execute("""
+                s.execute(text("""
                     UPDATE pieces SET nom=:nom, materiau=:materiau, epaisseur_mm=:epaisseur_mm,
                     longueur_mm=:longueur_mm, largeur_mm=:largeur_mm, stock=:stock,
                     notes=:notes, updated_at=:updated_at WHERE ref=:ref
-                """, params={
+                """), params={
                     "nom": str(row["nom"]), "materiau": str(row.get("materiau", "") or ""),
                     "epaisseur_mm": nullable_num(row.get("epaisseur_mm")),
                     "longueur_mm": nullable_num(row.get("longueur_mm")),
@@ -135,11 +139,11 @@ def upsert_piece(row, allow_stock_update=True):
                     "notes": str(row.get("notes", "") or ""), "updated_at": now, "ref": str(row["ref"])
                 })
             else:
-                s.execute("""
+                s.execute(text("""
                     UPDATE pieces SET nom=:nom, materiau=:materiau, epaisseur_mm=:epaisseur_mm,
                     longueur_mm=:longueur_mm, largeur_mm=:largeur_mm, notes=:notes,
                     updated_at=:updated_at WHERE ref=:ref
-                """, params={
+                """), params={
                     "nom": str(row["nom"]), "materiau": str(row.get("materiau", "") or ""),
                     "epaisseur_mm": nullable_num(row.get("epaisseur_mm")),
                     "longueur_mm": nullable_num(row.get("longueur_mm")),
@@ -147,10 +151,10 @@ def upsert_piece(row, allow_stock_update=True):
                     "notes": str(row.get("notes", "") or ""), "updated_at": now, "ref": str(row["ref"])
                 })
         else:
-            s.execute("""
+            s.execute(text("""
                 INSERT INTO pieces(ref, nom, materiau, epaisseur_mm, longueur_mm, largeur_mm, stock, notes, updated_at)
                 VALUES(:ref, :nom, :materiau, :epaisseur_mm, :longueur_mm, :largeur_mm, :stock, :notes, :updated_at)
-            """, params={
+            """), params={
                 "ref": str(row["ref"]), "nom": str(row["nom"]), "materiau": str(row.get("materiau", "") or ""),
                 "epaisseur_mm": nullable_num(row.get("epaisseur_mm")),
                 "longueur_mm": nullable_num(row.get("longueur_mm")),
@@ -161,7 +165,7 @@ def upsert_piece(row, allow_stock_update=True):
         s.commit()
 
 
-# --- Fonctions PDF (identiques à votre code original) ---
+# --- Fonctions PDF ---
 def make_pdf(order, lines, atelier, threshold):
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=15*mm, leftMargin=15*mm, topMargin=14*mm, bottomMargin=14*mm)
@@ -339,7 +343,7 @@ with tabs[1]:
                 st.error("Le stock ne peut pas devenir négatif.")
             else:
                 with conn.session as s:
-                    s.execute("UPDATE pieces SET stock=:stock, updated_at=:updated_at WHERE ref=:ref",
+                    s.execute(text("UPDATE pieces SET stock=:stock, updated_at=:updated_at WHERE ref=:ref"),
                               params={"stock": new_stock, "updated_at": datetime.now().isoformat(timespec="seconds"), "ref": chosen_ref})
                     s.commit()
                 st.success(f"Stock de {chosen_ref} : {current['stock']} → {new_stock}. Motif : {a_reason}.")
@@ -389,7 +393,7 @@ with tabs[2]:
                 else:
                     with conn.session as s:
                         result = s.execute(
-                            "INSERT INTO orders(order_code, client, created_at, status, notes) VALUES(:code, :client, :created_at, :status, :notes) RETURNING id",
+                            text("INSERT INTO orders(order_code, client, created_at, status, notes) VALUES(:code, :client, :created_at, :status, :notes) RETURNING id"),
                             params={
                                 "code": order_code.strip(), "client": client.strip(),
                                 "created_at": datetime.now().strftime("%d/%m/%Y %H:%M"),
@@ -400,7 +404,7 @@ with tabs[2]:
                         for r in selected_refs:
                             row = pieces_df.loc[pieces_df["ref"] == r].iloc[0]
                             s.execute(
-                                "INSERT INTO order_lines(order_id, ref, nom_snapshot, quantite) VALUES(:oid, :ref, :nom, :qty)",
+                                text("INSERT INTO order_lines(order_id, ref, nom_snapshot, quantite) VALUES(:oid, :ref, :nom, :qty)"),
                                 params={"oid": oid, "ref": r, "nom": row["nom"], "qty": int(qty_by_ref[r])}
                             )
                         s.commit()
@@ -450,9 +454,9 @@ with tabs[2]:
                     else:
                         with conn.session as s:
                             for line in latest_lines:
-                                s.execute("UPDATE pieces SET stock = stock - :qty, updated_at = :updated_at WHERE ref = :ref",
+                                s.execute(text("UPDATE pieces SET stock = stock - :qty, updated_at = :updated_at WHERE ref = :ref"),
                                           params={"qty": int(line["quantite"]), "updated_at": datetime.now().isoformat(timespec="seconds"), "ref": line["ref"]})
-                            s.execute("UPDATE orders SET status='Validée' WHERE id=:id", params={"id": int(selected_id)})
+                            s.execute(text("UPDATE orders SET status='Validée' WHERE id=:id"), params={"id": int(selected_id)})
                             s.commit()
                         st.success("Commande validée : stock déduit.")
                         st.rerun()
@@ -498,7 +502,6 @@ with tabs[4]:
             st.dataframe(import_df.head(10), width="stretch", hide_index=True)
             
             if st.button("Importer le catalogue", type="primary"):
-                # Nettoyage simplifié
                 cleaned = import_df.copy()
                 cleaned.columns = [str(c).strip().lower() for c in cleaned.columns]
                 rename_map = {
@@ -530,7 +533,6 @@ with tabs[4]:
     st.subheader("Exporter le stock")
     pieces_df = read_pieces()
     if not pieces_df.empty:
-        # Correction ici : la ligne était coupée
         csv_bytes = pieces_df.drop(columns=["updated_at"], errors="ignore").to_csv(index=False).encode("utf-8-sig")
         st.download_button(
             "⬇️ Télécharger l'inventaire CSV", 
