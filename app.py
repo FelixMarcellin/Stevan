@@ -482,6 +482,7 @@ with tabs[4]:
     st.caption("Colonnes reconnues : ref/référence/code, nom/désignation/pièce, stock/quantité, matériau, épaisseur, longueur, largeur, notes.")
     uploaded = st.file_uploader("Choisir un fichier CSV ou Excel", type=["csv","xlsx","xls"])
     import_mode = st.radio("Si une référence existe déjà", ["Mettre à jour aussi le stock depuis le fichier", "Mettre à jour les informations sans modifier le stock"], index=1)
+    
     if uploaded is not None:
         try:
             if uploaded.name.lower().endswith(".csv"):
@@ -492,15 +493,21 @@ with tabs[4]:
                     import_df = pd.read_csv(uploaded, sep=None, engine="python", encoding="cp1252")
             else:
                 import_df = pd.read_excel(uploaded)
+            
             st.write("Aperçu du fichier :")
             st.dataframe(import_df.head(10), width="stretch", hide_index=True)
+            
             if st.button("Importer le catalogue", type="primary"):
-                # Nettoyage simplifié pour l'exemple
+                # Nettoyage simplifié
                 cleaned = import_df.copy()
                 cleaned.columns = [str(c).strip().lower() for c in cleaned.columns]
-                # Renommage de base (simplifié)
-                rename_map = {"référence":"ref", "reference":"ref", "désignation":"nom", "designation":"nom", "quantité":"stock", "quantite":"stock"}
+                rename_map = {
+                    "référence": "ref", "reference": "ref", 
+                    "désignation": "nom", "designation": "nom", 
+                    "quantité": "stock", "quantite": "stock"
+                }
                 cleaned = cleaned.rename(columns=rename_map)
+                
                 if "ref" not in cleaned.columns or "nom" not in cleaned.columns:
                     st.error("Colonnes 'ref' et 'nom' obligatoires.")
                 else:
@@ -518,8 +525,33 @@ with tabs[4]:
                     st.rerun()
         except Exception as exc:
             st.error(f"Impossible de lire ce fichier : {exc}")
+            
     st.divider()
     st.subheader("Exporter le stock")
     pieces_df = read_pieces()
     if not pieces_df.empty:
-        csv_bytes = pieces_df.drop(columns=["updated_at"], errors="
+        # Correction ici : la ligne était coupée
+        csv_bytes = pieces_df.drop(columns=["updated_at"], errors="ignore").to_csv(index=False).encode("utf-8-sig")
+        st.download_button(
+            "⬇️ Télécharger l'inventaire CSV", 
+            data=csv_bytes, 
+            file_name="inventaire_pieces.csv", 
+            mime="text/csv",
+            width="stretch"
+        )
+        
+    st.subheader("Modèle de fichier CSV")
+    template = pd.DataFrame([
+        {"ref":"CAI-FL-001","nom":"Flanc gauche caisson","materiau":"Contreplaqué peuplier","epaisseur_mm":15,"longueur_mm":700,"largeur_mm":400,"stock":12,"notes":""},
+        {"ref":"CAI-FO-001","nom":"Fond caisson","materiau":"Contreplaqué peuplier","epaisseur_mm":15,"longueur_mm":680,"largeur_mm":400,"stock":4,"notes":""},
+    ])
+    st.download_button(
+        "Télécharger le modèle CSV", 
+        data=template.to_csv(index=False).encode("utf-8-sig"), 
+        file_name="modele_catalogue_pieces.csv", 
+        mime="text/csv",
+        width="stretch"
+    )
+
+st.divider()
+st.caption("Version 2 : stock de pièces découpées uniquement. Les commandes sont composées manuellement à partir des références de pièces.")
